@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FROSHMerge — Excel Report Merger &amp; Compressor</title>
+  <meta name="description" content="Merge Excel reports into one workbook, compress oversized .xlsx files, and bundle reports into ZIP archives — free, no sign-up.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='8' width='56' height='48' rx='10' fill='%234f46e5'/%3E%3Cpath d='M14 24h36M14 34h36M14 44h24' stroke='%23fff' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 64 64" width="34" height="34"><rect x="4" y="8" width="56" height="48" rx="10" fill="#4f46e5"/><path d="M14 24h36M14 34h36M14 44h24" stroke="#fff" stroke-width="4" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand-text">
+          <strong>FROSHMerge</strong>
+          <small>Excel report merger &amp; compressor</small>
+        </span>
+      </a>
+      <div class="topbar-badges">
+        <span class="badge">Free</span>
+        <span class="badge">No sign-up</span>
+        <span class="badge">Auto-delete in 1h</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+
+    <section class="hero">
+      <h1>Merge, compress &amp; bundle your Excel reports</h1>
+      <p class="hero-sub">
+        Combine many workbooks into one, shrink oversized <strong>.xlsx</strong> files,
+        or pack reports into a single ZIP — right from your browser. Files are processed
+        on the server and deleted automatically.
+      </p>
+    </section>
+
+    <section class="toolcard">
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="merge" role="tab" aria-selected="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M8 7h8m0 0-3-3m3 3-3 3M8 17h8m0 0-3-3m3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Merge
+        </button>
+        <button class="tab" data-tab="compress" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3v9m0 0 4-4m-4 4L8 8M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Compress
+        </button>
+        <button class="tab" data-tab="zip" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 8h16v12H4zM4 8l2-4h12l2 4M10 13h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          ZIP bundle
+        </button>
+      </nav>
+
+      <!-- ============ upload zone ============ -->
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload files">
+        <svg viewBox="0 0 24 24" width="42" height="42"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <p><strong>Drag &amp; drop files here</strong> or <span class="linklike">click to browse</span></p>
+        <small id="dropzone-hint">.xlsx, .xlsm, .xls, .csv — up to 30 files</small>
+        <input type="file" id="file-input" multiple hidden>
+      </div>
+
+      <ul class="filelist" id="filelist"></ul>
+
+      <!-- ============ options: merge ============ -->
+      <div class="options" id="options-merge">
+        <div class="opt-row">
+          <span class="opt-label">Merge mode</span>
+          <div class="radio-cards">
+            <label class="radio-card active">
+              <input type="radio" name="mode" value="stack" checked>
+              <span class="rc-title">Stack into one sheet</span>
+              <span class="rc-desc">Rows from all files are combined into a single sheet, columns aligned by header.</span>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="mode" value="sheets">
+              <span class="rc-title">Each file = one sheet</span>
+              <span class="rc-desc">Every uploaded file becomes its own sheet inside one workbook.</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="opt-group" id="stack-only">
+          <div class="opt-row">
+            <span class="opt-label">Column strategy <small>(stack mode)</small></span>
+            <select id="strategy" name="strategy">
+              <option value="union">All columns (union) — keep every column found</option>
+              <option value="common">Common columns only — keep columns shared by all files</option>
+              <option value="first">First file's columns — keep only what the first file has</option>
+            </select>
+          </div>
+          <div class="opt-checkboxes">
+            <label class="check"><input type="checkbox" id="opt-header" checked> First row of each file contains headers</label>
+            <label class="check"><input type="checkbox" id="opt-source"> Add a “Source File” column</label>
+            <label class="check"><input type="checkbox" id="opt-dedupe"> Remove exact duplicate rows</label>
+          </div>
+        </div>
+
+        <div class="opt-row">
+          <span class="opt-label">Sheets</span>
+          <label class="check"><input type="checkbox" id="opt-include-all"> Include every sheet from each workbook (otherwise only the first sheet is used)</label>
+        </div>
+      </div>
+
+      <!-- ============ options: compress ============ -->
+      <div class="options hidden" id="options-compress">
+        <div class="opt-row">
+          <span class="opt-label">Compression level</span>
+          <div class="radio-cards">
+            <label class="radio-card active">
+              <input type="radio" name="preset" value="safe" checked>
+              <span class="rc-title">Safe (recommended)</span>
+              <span class="rc-desc">Re-encodes embedded images, removes hidden junk and repacks the file. Data, charts, formulas &amp; formatting are kept.</span>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="preset" value="max">
+              <span class="rc-title">Maximum</span>
+              <span class="rc-desc">Everything in Safe, plus strips conditional formatting, data validations and removes completely empty sheets.</span>
+            </label>
+          </div>
+        </div>
+        <details class="advanced">
+          <summary>Advanced options</summary>
+          <div class="opt-row">
+            <span class="opt-label">Max image dimension (px)</span>
+            <input type="number" id="max_dim" min="256" max="4096" step="64" value="1600">
+          </div>
+          <div class="opt-row">
+            <span class="opt-label">JPEG quality: <b id="quality-val">72</b></span>
+            <input type="range" id="quality" min="30" max="95" step="1" value="72">
+          </div>
+          <p class="hint">Only <strong>.xlsx / .xlsm</strong> files can be size-compressed. For other formats use the ZIP bundle tab.</p>
+        </details>
+      </div>
+
+      <!-- ============ options: zip ============ -->
+      <div class="options hidden" id="options-zip">
+        <p class="hint">Packs all uploaded files into one <strong>.zip</strong> archive — ideal for emailing or archiving batches of reports. Duplicate file names are renamed automatically.</p>
+      </div>
+
+      <button class="runbtn" id="runbtn" type="button">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M5 12h14m0 0-5-5m5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span id="runbtn-label">Merge files</span>
+      </button>
+
+      <div class="progress hidden" id="progress" aria-live="polite">
+        <div class="bar"><div class="fill" id="fill"></div></div>
+        <p class="status" id="status">Uploading…</p>
+      </div>
+
+      <div class="results hidden" id="results"></div>
+      <div class="error hidden" id="error" role="alert"></div>
+    </section>
+
+    <section class="features">
+      <article class="feature">
+        <div class="f-icon">⛓</div>
+        <h3>Smart merging</h3>
+        <p>Stack reports with different column layouts — headers are matched intelligently, duplicate rows can be removed and each row can be tagged with its source file.</p>
+      </article>
+      <article class="feature">
+        <div class="f-icon">🗜</div>
+        <h3>True compression</h3>
+        <p>Images inside the workbook are re-encoded and the package repacked at maximum compression — without re-exporting and destroying your file.</p>
+      </article>
+      <article class="feature">
+        <div class="f-icon">🔒</div>
+        <h3>Private by design</h3>
+        <p>No accounts, no databases, no tracking. Files are deleted from the server one hour after processing.</p>
+      </article>
+    </section>
+
+    <section class="faq">
+      <h2>Frequently asked questions</h2>
+      <details><summary>Which file formats are supported?</summary>
+        <p><strong>Merge:</strong> .xlsx, .xlsm, .xls and .csv. <strong>Compress:</strong> .xlsx and .xlsm. <strong>ZIP:</strong> anything you can upload (up to 30 files, 100 MB per request).</p>
+      </details>
+      <details><summary>Will merging lose my formatting or formulas?</summary>
+        <p>Merge mode is value-based: it combines the cell values (including computed formula results) into a clean report — like copy-pasting data. "Each file = one sheet" keeps each file's layout intact. Formatting is intentionally not copied so the output is one consistent, clean table.</p>
+      </details>
+      <details><summary>What does the compressor actually remove?</summary>
+        <p><strong>Safe:</strong> re-encodes embedded images (JPEG quality / PNG optimization), removes the document thumbnail and calc chain, and repacks the ZIP at maximum compression. <strong>Maximum:</strong> also strips conditional formatting, data validations and completely empty sheets. Cell data, formulas, charts and styles are always preserved.</p>
+      </details>
+      <details><summary>How long are my files kept?</summary>
+        <p>Results are available for download for <strong>1 hour</strong>, then automatically deleted. Uploaded files are deleted immediately after processing.</p>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>SheetForge — Excel report merger &amp; compressor · Files are processed and auto-deleted · No data is stored or shared</p>
+  </footer>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

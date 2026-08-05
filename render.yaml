@@ -1,0 +1,16 @@
+# Render.com one-click deploy config (free tier works)
+services:
+  - type: web
+    name: sheetforge
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 300 --workers 2 --threads 4
+    healthCheckPath: /api/health
+    envVars:
+      - key: MAX_UPLOAD_MB
+        value: "100"
+      - key: MAX_FILES
+        value: "30"
+      - key: JOB_TTL_SECONDS
+        value: "3600"
