@@ -6,6 +6,12 @@ Two merge modes:
   with columns aligned by header name (union / common / first-file).
 * ``sheets`` — every uploaded table becomes its own sheet in one workbook,
   keeping each file's layout intact.
+
+Memory design: rows are kept as plain lists and mapped to output columns
+with a precomputed index map — no per-row dictionaries — so large merges
+stay well inside the memory of free hosting plans (e.g. Render free's
+512 MB). Very large merges additionally switch to openpyxl's streaming
+(write-only) writer.
 """
 from __future__ import annotations
 
@@ -23,9 +29,9 @@ from openpyxl.utils import get_column_letter
 from .errors import ExcelToolError
 
 # ---------------------------------------------------------------------------
-# Limits (kept deliberately high but bounded so the server cannot be OOM'd)
+# Limits (bounded so the server cannot be OOM'd; env-overridable)
 # ---------------------------------------------------------------------------
-MAX_TOTAL_ROWS = 500_000      # max data rows in a stacked output
+MAX_TOTAL_ROWS = int(os.environ.get("MAX_TOTAL_ROWS", "200000"))
 MAX_OUTPUT_COLS = 500         # max columns in a stacked output
 MAX_SHEET_NAME_LEN = 31       # Excel hard limit
 MAX_WIDTH_SAMPLE = 1000       # rows inspected per sheet for column widths
@@ -261,25 +267,23 @@ def merge_stacked(tables, *, header: bool = True, strategy: str = "union",
     if not tables:
         raise ExcelToolError("No readable data found in the uploaded files.")
 
+    # ---- parse all tables: cleaned rows as plain lists, header keys ------
     parsed, total_data_rows = [], 0
     for t in tables:
         header_row, data_rows = _extract_header(t.rows, header)
         keys, display = _build_header(header_row)
-        recs = []
+        rows = []
         for r in data_rows:
             clean = [_clean(v) for v in r]
             if all(v is None for v in clean):
                 continue
-            rec = {}
-            for i, k in enumerate(keys):
-                rec[k] = clean[i] if i < len(clean) else None
-            recs.append(rec)
-        if not recs:
+            rows.append(clean)
+        if not rows:
             continue
-        total_data_rows += len(recs)
+        total_data_rows += len(rows)
         parsed.append({
             "source": t.source, "sheet": t.sheet,
-            "keys": keys, "display": display, "rows": recs,
+            "keys": keys, "display": display, "rows": rows,
         })
 
     if not parsed:
@@ -290,7 +294,7 @@ def merge_stacked(tables, *, header: bool = True, strategy: str = "union",
             f"{MAX_TOTAL_ROWS:,}). Please split the files into smaller batches."
         )
 
-    # --- choose the final column set ---------------------------------------
+    # ---- choose the final column set --------------------------------------
     first = parsed[0]
     if strategy == "first":
         final_keys, final_display = list(first["keys"]), list(first["display"])
@@ -312,7 +316,13 @@ def merge_stacked(tables, *, header: bool = True, strategy: str = "union",
             f"is {MAX_OUTPUT_COLS})."
         )
 
-    # --- write --------------------------------------------------------------
+    # ---- precompute per-table source-column -> output-column map ----------
+    # (list of row indexes; None = no matching column in this table)
+    for p in parsed:
+        kmap = {k: i for i, k in enumerate(p["keys"])}
+        p["colmap"] = [kmap[k] if k in kmap else None for k in final_keys]
+
+    # ---- write -------------------------------------------------------------
     # Normal writer for typical merges (freeze panes, bold header, autofilter
     # all supported); memory-safe write-only writer for very large merges.
     out_header = (["Source File"] if add_source else []) + final_display
@@ -329,11 +339,12 @@ def merge_stacked(tables, *, header: bool = True, strategy: str = "union",
     widths = [0] * len(out_header)
     seen, dupes, written = set(), 0, 0
     for p in parsed:
+        colmap = p["colmap"]
         label = p["source"]
         if include_all_sheets and p["sheet"] and p["sheet"] != "CSV":
             label = f"{p['source']} [{p['sheet']}]"
-        for rec in p["rows"]:
-            vals = [rec.get(k) for k in final_keys]
+        for row in p["rows"]:
+            vals = [row[i] if i is not None else None for i in colmap]
             if dedupe:
                 key = tuple(_dedupe_key(v) for v in vals)
                 if key in seen:
@@ -344,9 +355,10 @@ def merge_stacked(tables, *, header: bool = True, strategy: str = "union",
                 vals.insert(0, label)
             ws.append(vals)
             written += 1
-            for i, v in enumerate(vals):
-                if isinstance(v, str) and len(v) > widths[i]:
-                    widths[i] = min(len(v), 60)
+            if written <= MAX_WIDTH_SAMPLE:
+                for i, v in enumerate(vals):
+                    if isinstance(v, str) and len(v) > widths[i]:
+                        widths[i] = min(len(v), 60)
 
     for i, w in enumerate(widths):
         if w:
@@ -374,14 +386,6 @@ def merge_stacked(tables, *, header: bool = True, strategy: str = "union",
     return wb, stats
 
 
-def _try(fn):
-    """Run a cosmetic operation; never fail a merge because of it."""
-    try:
-        fn()
-    except Exception:
-        pass
-
-
 # ---------------------------------------------------------------------------
 # Sheets mode
 # ---------------------------------------------------------------------------
@@ -390,12 +394,28 @@ def merge_as_sheets(tables, *, include_all_sheets: bool = False) -> tuple:
     if not tables:
         raise ExcelToolError("No readable data found in the uploaded files.")
 
-    wb = Workbook()
-    wb.remove(wb.active)
+    # total rows first, so we can pick the memory-safe writer
+    total_rows = sum(
+        sum(1 for r in t.rows if not _row_is_empty(r)) for t in tables
+    )
+    if total_rows > MAX_TOTAL_ROWS:
+        raise ExcelToolError(
+            f"Too many rows to merge ({total_rows:,} — the limit is "
+            f"{MAX_TOTAL_ROWS:,}). Please split the files into smaller batches."
+        )
+
+    write_only = total_rows > WRITE_ONLY_THRESHOLD
+    wb = Workbook(write_only=write_only)
+    if not write_only:
+        wb.remove(wb.active)
+
     used_names = set()
     written_total = 0
 
     for t in tables:
+        rows = [r for r in t.rows if not _row_is_empty(r)]
+        if not rows:
+            continue  # skip empty tables instead of creating blank sheets
         stem = Path(t.source).stem or "Sheet"
         if include_all_sheets and t.sheet and t.sheet != "CSV":
             base = f"{stem}_{t.sheet}"
@@ -404,10 +424,6 @@ def merge_as_sheets(tables, *, include_all_sheets: bool = False) -> tuple:
         name = _sanitize_sheet_name(base, used_names)
 
         ws = wb.create_sheet(title=name)
-        rows = [r for r in t.rows if not _row_is_empty(r)]
-        if not rows:
-            wb.remove(ws)
-            continue
         widths = [0] * max(len(r) for r in rows)
         for i, r in enumerate(rows):
             clean = [_clean(v) for v in r]
@@ -420,14 +436,10 @@ def merge_as_sheets(tables, *, include_all_sheets: bool = False) -> tuple:
         for j, w in enumerate(widths):
             if w:
                 ws.column_dimensions[get_column_letter(j + 1)].width = min(60, max(12, w + 2))
-        _try(lambda: setattr(ws, "freeze_panes", "A2"))
+        if not write_only:
+            ws.freeze_panes = "A2"
 
-    if written_total > MAX_TOTAL_ROWS:
-        raise ExcelToolError(
-            f"Too many rows to merge ({written_total:,} — the limit is "
-            f"{MAX_TOTAL_ROWS:,})."
-        )
-    if len(wb.sheetnames) == 0:
+    if written_total == 0:
         raise ExcelToolError("No data rows found in the uploaded files.")
 
     stats = {

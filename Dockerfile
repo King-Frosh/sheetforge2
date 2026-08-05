@@ -10,4 +10,4 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8000", "--timeout", "300", "--workers", "2", "--threads", "4"]
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8000", "--timeout", "600", "--workers", "1", "--threads", "4", "--max-requests", "30", "--max-requests-jitter", "10"]

@@ -5,12 +5,17 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 300 --workers 2 --threads 4
+    # 1 worker keeps memory usage inside the free 512 MB limit;
+    # 4 threads still allow concurrent requests. Workers are recycled
+    # every ~30 requests so memory never creeps up across jobs.
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 600 --workers 1 --threads 4 --max-requests 30 --max-requests-jitter 10
     healthCheckPath: /api/health
     envVars:
       - key: MAX_UPLOAD_MB
         value: "100"
       - key: MAX_FILES
         value: "30"
+      - key: MAX_TOTAL_ROWS
+        value: "200000"
       - key: JOB_TTL_SECONDS
         value: "3600"
