@@ -31,7 +31,7 @@ from .errors import ExcelToolError
 # ---------------------------------------------------------------------------
 # Limits (bounded so the server cannot be OOM'd; env-overridable)
 # ---------------------------------------------------------------------------
-MAX_TOTAL_ROWS = int(os.environ.get("MAX_TOTAL_ROWS", "200000"))
+MAX_TOTAL_ROWS = int(os.environ.get("MAX_TOTAL_ROWS", "10000000"))
 MAX_OUTPUT_COLS = 500         # max columns in a stacked output
 MAX_SHEET_NAME_LEN = 31       # Excel hard limit
 MAX_WIDTH_SAMPLE = 1000       # rows inspected per sheet for column widths
