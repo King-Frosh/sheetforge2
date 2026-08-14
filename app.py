@@ -20,8 +20,6 @@ Design notes
 * All processing errors are returned as JSON with a friendly message;
   unexpected exceptions become a generic 500 JSON response.
 """
-from __future__ import annotations
-
 import json
 import os
 import re
@@ -39,6 +37,9 @@ from core.bundle import make_bundle
 from core.compress import compress_workbook
 from core.errors import ExcelToolError
 from core.merge import merge_as_sheets, merge_stacked, read_tables
+
+from jobs import create_job, get_job
+from worker import start_merge_job
 
 BASE_DIR = Path(__file__).resolve().parent
 WORK_DIR = BASE_DIR / "work"
@@ -158,49 +159,155 @@ def health():
 
 @app.post("/api/merge")
 def api_merge():
+
     _sweep_old_jobs()
+
     try:
+
         mode = request.form.get("mode", "stack")
+
         if mode not in ("stack", "sheets"):
             raise ExcelToolError("Invalid merge mode.")
-        strategy = request.form.get("strategy", "union")
-        if strategy not in ("union", "common", "first"):
-            raise ExcelToolError("Invalid column strategy.")
-        header = request.form.get("header", "1") == "1"
-        add_source = request.form.get("add_source", "0") == "1"
-        dedupe = request.form.get("dedupe", "0") == "1"
-        include_all = request.form.get("include_all", "0") == "1"
+
+        strategy = request.form.get(
+            "strategy",
+            "union"
+        )
+
+        if strategy not in (
+            "union",
+            "common",
+            "first",
+        ):
+            raise ExcelToolError(
+                "Invalid column strategy."
+            )
+
+        header = (
+            request.form.get("header", "1")
+            == "1"
+        )
+
+        add_source = (
+            request.form.get("add_source", "0")
+            == "1"
+        )
+
+        dedupe = (
+            request.form.get("dedupe", "0")
+            == "1"
+        )
+
+        include_all = (
+            request.form.get("include_all", "0")
+            == "1"
+        )
+
+        # ---------------------------------------------------------
+        # Collect uploaded files
+        # ---------------------------------------------------------
 
         saved = _collect_uploads()
-        try:
-            tables = []
-            for tmp, original in saved:
-                tables.extend(read_tables(tmp, original, include_all))
-        finally:
-            for tmp, _ in saved:
-                tmp.unlink(missing_ok=True)
 
-        if mode == "stack":
-            wb, stats = merge_stacked(
-                tables,
-                header=header,
-                strategy=strategy,
-                add_source=add_source,
-                dedupe=dedupe,
-                include_all_sheets=include_all,
-            )
-        else:
-            wb, stats = merge_as_sheets(tables, include_all_sheets=include_all)
+        # ---------------------------------------------------------
+        # Create background job
+        # ---------------------------------------------------------
 
-        out = WORK_DIR / f"{uuid.uuid4().hex}.xlsx"
-        wb.save(out)
-        name = f"{_first_stem(saved)}_merged.xlsx"
-        token = _save_job(out, name, XLSX_MIME)
-        return jsonify({"ok": True, "token": token, "name": name,
-                        "download": f"/download/{token}", "stats": stats})
+        job_id = create_job()
+
+        # ---------------------------------------------------------
+        # Start background worker
+        # ---------------------------------------------------------
+
+        options = {
+            "mode": mode,
+            "strategy": strategy,
+            "header": header,
+            "add_source": add_source,
+            "dedupe": dedupe,
+            "include_all": include_all,
+        }
+
+        start_merge_job(
+            job_id,
+            saved,
+            options,
+        )
+
+        # ---------------------------------------------------------
+        # IMPORTANT:
+        # Return immediately.
+        # Do NOT wait for the Excel merge.
+        # ---------------------------------------------------------
+
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "status": "queued",
+            "message": "Merge job started.",
+        })
+
     except ExcelToolError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
 
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+
+    except Exception as exc:
+
+        traceback.print_exc()
+
+        return jsonify({
+            "ok": False,
+            "error": "Could not start merge job.",
+        }), 500
+
+
+@app.get("/api/jobs/<job_id>")
+def api_job_status(job_id):
+
+    job = get_job(job_id)
+
+    if not job:
+        return jsonify({
+            "ok": False,
+            "error": "Job not found.",
+        }), 404
+
+    response = {
+        "ok": True,
+        "id": job["id"],
+        "status": job["status"],
+        "progress": job["progress"],
+        "message": job["message"],
+        "error": job.get("error"),
+    }
+
+    # ---------------------------------------------------------
+    # Completed job
+    # ---------------------------------------------------------
+
+    if job["status"] == "completed":
+
+        result = job.get("result") or {}
+
+        response["result"] = {
+            "name": result.get(
+                "name",
+                "merged.xlsx"
+            ),
+            "stats": result.get(
+                "stats",
+                {}
+            ),
+        }
+
+        response["download"] = (
+            f"/download/{job_id}"
+        )
+
+    return jsonify(response)
 
 @app.post("/api/compress")
 def api_compress():
@@ -274,48 +381,47 @@ def api_zip():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
-@app.get("/download/<token>")
-def download(token: str):
-    _sweep_old_jobs()
-    if not TOKEN_RE.match(token):
-        return jsonify({"ok": False, "error": "Invalid download token."}), 404
-    meta_path = WORK_DIR / f"{token}.json"
-    if not meta_path.is_file():
-        return jsonify({"ok": False,
-                        "error": "This download has expired or does not exist "
-                                 "(files are deleted 1 hour after processing)."}), 404
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        file_path = WORK_DIR / meta["file"]
-        if not file_path.is_file():
-            return jsonify({"ok": False, "error": "Result file is missing."}), 404
-        return send_file(file_path, as_attachment=True,
-                         download_name=meta["name"], mimetype=meta["mime"])
-    except Exception:
-        traceback.print_exc()
-        return jsonify({"ok": False, "error": "Could not serve the file."}), 500
+@app.get("/download/<job_id>")
+def download(job_id):
 
+    job = get_job(job_id)
 
-# ---------------------------------------------------------------------------
-# Error handlers
-# ---------------------------------------------------------------------------
-@app.errorhandler(413)
-def too_large(_e):
-    return jsonify({
-        "ok": False,
-        "error": f"Upload too large — the limit is {MAX_UPLOAD_MB} MB per request.",
-    }), 413
+    if not job:
+        return jsonify({
+            "ok": False,
+            "error": "Download not found.",
+        }), 404
 
+    if job["status"] != "completed":
+        return jsonify({
+            "ok": False,
+            "error": "The merge is not completed yet.",
+        }), 400
 
-@app.errorhandler(Exception)
-def unexpected_error(e):
-    if isinstance(e, HTTPException):
-        return jsonify({"ok": False, "error": e.description}), e.code
-    traceback.print_exc()
-    return jsonify({"ok": False,
-                    "error": "Unexpected server error. Please try again."}), 500
+    result = job.get("result") or {}
 
+    file_path = result.get("file")
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
+    if not file_path:
+        return jsonify({
+            "ok": False,
+            "error": "Result file is missing.",
+        }), 404
+
+    path = Path(file_path)
+
+    if not path.is_file():
+        return jsonify({
+            "ok": False,
+            "error": "Result file no longer exists.",
+        }), 404
+
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=result.get(
+            "name",
+            "merged.xlsx"
+        ),
+        mimetype=XLSX_MIME,
+    )
