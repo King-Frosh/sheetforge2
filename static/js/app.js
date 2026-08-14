@@ -166,49 +166,133 @@
     $("status").textContent = text;
   }
 
-  function run() {
+  async function run() {
     hideResults();
     hideError();
+
     if (!validateFiles()) return;
 
     const btn = $("runbtn");
+
     btn.disabled = true;
     $("progress").classList.remove("hidden");
 
     const fd = buildFormData();
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/" + TABS[state.tab].endpoint);
-    xhr.responseType = "text";
 
-    xhr.upload.addEventListener("progress", (e) => {
-      if (e.lengthComputable) {
-        setProgress((e.loaded / e.total) * 100, "Uploading… " + fmtBytes(e.loaded));
-      }
-    });
-    xhr.upload.addEventListener("load", () => setProcessing("Processing on server…"));
+    try {
+        setProgress(5, "Uploading files...");
 
-    xhr.addEventListener("load", () => {
-      $("progress").classList.add("hidden");
-      btn.disabled = false;
-      let resp = null;
-      try { resp = JSON.parse(xhr.responseText); } catch (_) { /* fall through */ }
-      if (xhr.status >= 200 && xhr.status < 300 && resp && resp.ok) {
-        renderResults(resp);
-      } else if (resp && resp.error) {
-        showError(escapeHtml(resp.error));
-      } else {
-        showError("Unexpected server response (" + xhr.status + "). Please try again.");
-      }
-    });
-    xhr.addEventListener("error", () => {
-      $("progress").classList.add("hidden");
-      btn.disabled = false;
-      showError("Network error — could not reach the server. Check your connection and try again.");
-    });
+        const response = await fetch("/api/merge", {
+            method: "POST",
+            body: fd
+        });
 
-    xhr.send(fd);
-  }
+        const data = await response.json();
 
+        if (!response.ok || !data.ok) {
+            throw new Error(
+                data.error || `Server error (${response.status})`
+            );
+        }
+
+        // The server has accepted the job.
+        // It is now processing in the background.
+        setProgress(10, "Files uploaded. Starting merge...");
+
+        pollJob(data.job_id);
+
+    } catch (error) {
+        $("progress").classList.add("hidden");
+        btn.disabled = false;
+
+        showError(
+            escapeHtml(
+                error.message || "Could not start the merge."
+            )
+        );
+    }
+}
+  async function pollJob(jobId) {
+
+    const btn = $("runbtn");
+
+    const timer = setInterval(async () => {
+
+        try {
+
+            const response = await fetch(`/api/jobs/${jobId}`);
+
+            const job = await response.json();
+
+            if (!response.ok || !job.ok) {
+                clearInterval(timer);
+
+                $("progress").classList.add("hidden");
+                btn.disabled = false;
+
+                showError(
+                    escapeHtml(
+                        job.error || "Could not retrieve merge status."
+                    )
+                );
+
+                return;
+            }
+
+            setProgress(
+                job.progress || 0,
+                job.message || "Processing..."
+            );
+
+            if (job.status === "completed") {
+
+                clearInterval(timer);
+
+                $("progress").classList.add("hidden");
+                btn.disabled = false;
+
+                const result = {
+                    ok: true,
+                    stats: job.result?.stats || {},
+                    download: job.download,
+                    name: job.result?.file || "merged.xlsx"
+                };
+
+                renderResults(result);
+
+                return;
+            }
+
+            if (job.status === "failed") {
+
+                clearInterval(timer);
+
+                $("progress").classList.add("hidden");
+                btn.disabled = false;
+
+                showError(
+                    escapeHtml(
+                        job.error || "The merge failed."
+                    )
+                );
+
+                return;
+            }
+
+        } catch (error) {
+
+            clearInterval(timer);
+
+            $("progress").classList.add("hidden");
+            btn.disabled = false;
+
+            showError(
+                "Network error while checking merge status."
+            );
+        }
+
+    }, 1500);
+}
   /* ------------------------------ results ------------------------------ */
   function statTile(label, value) {
     return '<div class="stat-tile"><b>' + escapeHtml(String(value)) + "</b><span>" +
